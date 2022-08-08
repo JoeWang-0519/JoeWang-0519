@@ -1,0 +1,32 @@
+- Basic Idea:
+   - Embedding
+      - Combine word embedding and positional embedding together
+         - the only sequence information in transformer architecture
+   - It is made up of two composition: Encoder and Decoder (**Seq2Seq Model without choices of RNN or CNN**)
+      - Encoder (Decoder) has several Encoder Blocks (Decoder Blocks)
+      - **Each Encoder Block has **
+         - Multi-head Attention
+            - Self-attention
+               - Several Q, K, V (head1, head2, ...)
+                  - We achieve this by conducting projection on input embeddings to another dimension vector space; generator is the parameter we want to learn.
+                  - K and V should have the same number of samples (for later encoder-decoder attention);
+                  - Q and K should have the same dimension (dot-product)
+               - Transform the word embeddings into more-structural embeddings
+                  - In this step, we consder the embedding in a global perspective and extract the useful knowledge from raw data (like pre-processing)
+                  - Self-Attention comes from this part. Attention is the method to** eventually achieve the more-structural embedding by each word component (Q and K determines the percentage, V is the raw value); **Self means all the information is achieved only by the input sequence, during which process we just look at the sequence itself.
+            - Feed Forward NN
+               - Combine several different attention together (**Linear one**), which can be understood as **projection to another dimension vector space.**
+         - Feed Forward NN
+            - 512-2048-512(the article setting, 512 is the input dimension) MLP, hidden layer ReLu, output layer identity function.
+         - Add-res and layer normalisation
+            - Layer norm(X + Z)
+      - **Each Decoder Block has**
+         - **Mask **Multi-head Attention 
+            - Set those afterwards ones with -infinity while do the softmax, which likes a mask for the process softmax(QK^T), input sequence for decoder is actually the output sequence (target sequence);
+         - Multi-head Attention (**Encoder-Decoder Attention** or **Cross-attention Mechnism**)
+            - Encoder gives **Key** and **Value (same size)**
+            - Decoder gives **Query (different size from Key(Value) Vector, usually dimension is the same, but sequence length is different between input sequence and target sequence)**
+         - Feed Forward NN
+
+Q (Query), K (Key) and V (Value) comes from the match system. For example, when we search for something, the words you search are Query. Then, system will calculate the similarity between your Query and the type/color/description of products (Keys). The product itself is the value.
+We just use the value which has the highest similarity with the query. And the idea of transformer (self-attention) is very close to this (Q, K, V vectors), **in order to transform the multiple word-embedding into the context-embedding**.
