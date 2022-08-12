@@ -1,0 +1,23 @@
+clear all;
+clc;
+x = linspace(-pi,pi,400);
+trainX = [x; sinc(x)]; % 2x400 matrix
+
+
+% parameter setting
+iteration_num = 1000;
+neur_num_1 = 1;
+neur_num_2 = 40;
+X_train = trainX;
+
+[weight, record_weight] = SOM(X_train, neur_num_1, neur_num_2, iteration_num);
+
+
+%plot(trainX(1,:),trainX(2,:),'+r'); % axis equal
+for graph = 1 : 20: 1000 
+    record = reshape(record_weight(graph, :, :), 2, 40);
+    plot(record(1, :), record(2, :),'--ob',LineWidth=.5)
+    pause(0.3)
+end
+
+

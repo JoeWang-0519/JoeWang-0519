@@ -1,0 +1,39 @@
+% 1-dim output layer SOM
+function weight = SOM_1(X_train, neur_num, iteration_num)
+[dim, train_num] = size(X_train);
+
+weight = rand(dim, neur_num);
+
+% initialize
+% check the range of training set
+X_range = zeros(dim, 2);
+X_range(:,1) = min(X_train,[],2);
+X_range(:,2) = max(X_train,[],2);
+
+% adapt the weight to the range of training set
+for i = 1 : dim
+    xmin = X_range(i,1);
+    xmax = X_range(i,2);
+    weight(i,:) = xmin + (xmax- xmin) * weight(i,:);
+end
+
+for i = 1 : iteration_num
+    sample_index = randperm(train_num,1);
+    x = X_train(:,sample_index);
+
+    distance = zeros(1, neur_num);
+    for j = 1 : neur_num
+        distance(j) = norm(x-weight(:,j));
+    end
+
+    [~ , winner_idx] = min(distance);
+
+    % update weights
+
+    for k = 1 : neur_num
+        weight(:,k) = weight(:,k)
+
+
+
+
+

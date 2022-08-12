@@ -1,0 +1,19 @@
+% select the optimal hyper-parameters discount rate
+% we fix learning rate at the second type 100/(100+k)
+clear all; 
+clc;
+%----------------------------------------------------------------------
+% load reward
+load task1.mat
+%----------------------------------------------------------------------
+% parameter
+run = 10;
+trial = 3000;
+discount_all = [0.6, 0.7, 0.8, 0.95];
+start_state = 1;
+end_state = 100;
+
+% learning rate and exploration probability
+load learning_rate.mat
+
+learning_rate = learning_rate2

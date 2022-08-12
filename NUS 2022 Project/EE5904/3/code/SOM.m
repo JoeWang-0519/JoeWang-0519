@@ -1,0 +1,107 @@
+% SOM 2-D
+function [weight, record_weight] = SOM(X_train, neur_num_1, neur_num_2, iteration_num)
+
+% parameter:
+% X_train: dimension * number of training samples
+% neur_num_1: number of output layer matrix
+% neur_num_2: number of output layer matrix 
+% such that the Output Layer Matrix is (neur_num_1) * (neur_num_2)
+% iteration_num: number of iteration
+
+% output:
+% weight: dimension * neur_num_1 * neur_num_2 vector
+% record_weight: dynamic graph
+
+
+
+[dim, train_num] = size(X_train);
+
+% weight(:,x,y)->the code(weight) of (x-th, y-th) matrix position neuron
+weight = rand(dim, neur_num_1, neur_num_2);
+record_weight = zeros(iteration_num, dim, neur_num_1, neur_num_2);
+
+% initialize
+% check the range of training set
+% X_range = zeros(dim, 2);
+% X_range(:,1) = min(X_train,[],2);
+% X_range(:,2) = max(X_train,[],2);
+% 
+% % adapt the weight to the range of training set
+% for i = 1 : dim
+%     xmin = X_range(i,1);
+%     xmax = X_range(i,2);
+%     weight(i,:) = xmin + (xmax- xmin) * weight(i,:);
+% end
+
+% determine the learning rate ETA and width sigma
+
+iteration_idx_vec = 1 : iteration_num;
+ 
+eta = 0.1 * exp(- iteration_idx_vec / iteration_num);
+
+sigma0 = sqrt(neur_num_1^2 + neur_num_2^2)/2;
+t1 = iteration_num / log(sigma0);
+sigma = sigma0 * exp(- iteration_idx_vec / t1);
+
+
+for i = 1 : iteration_num
+    sample_index = randperm(train_num , 1);
+    x = X_train(: , sample_index);
+
+    vec_distance = zeros(neur_num_1, neur_num_2);
+    for mat_1 = 1 : neur_num_1
+        for mat_2 = 1 : neur_num_2
+            vec_distance(mat_1, mat_2) = norm(x - weight(:, mat_1, mat_2));
+        end
+    end
+
+    [~ , winner_idx] = min(vec_distance, [], 'all');
+
+    % This is because max will return the index according starting from the
+    % column. Therefore, when 1-D SOM, we should consider the WINNER_IDX_2;
+    % when 2-D SOM, we should consider the WINNER_IDX_1
+    
+    if neur_num_1 == 1
+        winner_idx_1 = floor((winner_idx - 1) / neur_num_2) + 1;
+        winner_idx_2 = mod(winner_idx, neur_num_2);
+        
+        if winner_idx_2 == 0
+            winner_idx_2 = neur_num_2;
+        end
+    else
+        winner_idx_2 = floor((winner_idx - 1) / neur_num_1) + 1;
+        winner_idx_1 = mod(winner_idx, neur_num_1);
+        
+        if winner_idx_1 == 0
+            winner_idx_1 = neur_num_1;
+        end
+    end
+
+
+    %weight_win = weight(:, winner_idx_1, winner_idx_2);
+
+    % update weights
+    
+    % calculate the matrix idx distance square (to the winning neuron)
+
+    mat_distance_sq = zeros(neur_num_1, neur_num_2);
+    for m = 1 : neur_num_1
+        for n = 1: neur_num_2
+            mat_distance_sq(m , n) = (m - winner_idx_1)^2 + (n - winner_idx_2)^2;
+        end
+    end
+
+    for mat_1 = 1 : neur_num_1
+        for mat_2 = 1: neur_num_2
+            weight(:, mat_1, mat_2) = weight(:, mat_1, mat_2) + eta(i) * exp(- mat_distance_sq(mat_1, mat_2) / (2 * sigma(i)^2)) * (x - weight(:, mat_1, mat_2));
+        end
+    end
+    record_weight(i,:,:,:) = weight;
+end
+
+
+
+
+
+
+
