@@ -1,0 +1,38 @@
+--name:ATO_order_create_v1_white_samples
+--author:jiangyi.wang
+--create time:2022-08-11 18:27
+--********************************************************************--
+
+-- WHITE
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base1;
+create table if not exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base1 LIFECYCLE 30 as
+
+  select
+  a.user_id as order_buyer_id,
+  b.orderid,
+  b.order_create_time
+  from
+  (
+    select *
+    from lazada_biz_sec_dev.white_ato_login_sample_v3
+    where acsdata_entrance = 'native'
+    and umid is not NULL
+  )   a
+  left join
+  (
+    SELECT
+    event_id,
+    orderid,
+    from_unixtime(receive_time/1000) as order_create_time,
+    byracctid,
+    umid
+    from lzd_secods.odl_event_lazada_order_creation_risk_sg
+    where substr(ds,1,8) >= '20220401' and substr(ds,1,8) <= '20220601'
+  )   b
+  on a.user_id = b.byracctid
+;
+select * from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base1;
+
+

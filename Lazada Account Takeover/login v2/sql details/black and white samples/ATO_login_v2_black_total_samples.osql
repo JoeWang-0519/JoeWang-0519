@@ -1,0 +1,667 @@
+--name:ATO_login_v2_black_total_samples
+--author:jiangyi.wang
+--create time:2022-08-11 10:47
+--********************************************************************--
+--Black sample Extraction
+-- 对于多个报案记录，取最早的报案记录
+
+SET odps.instance.priority = 0;
+
+drop table if exists lazada_biz_sec_dev.black_acct_order_create;
+create table if not exists lazada_biz_sec_dev.black_acct_order_create LIFECYCLE 600 as
+
+  SELECT
+  tab.*
+  from
+  (
+    select
+    a1.ATO_create_date,   -- singapore time
+    dateadd(a2.order_create_date, 1, 'hour') as order_create_date, -- transfer to singapore time
+    a1.buyer_id as create_buyer_id,
+    a2.buyer_id as order_buyer_id,
+    a1.buyer_id - a2.buyer_id as diff_id,
+    a1.order_number,
+    a1.hit_tag
+    from
+    (
+      SELECT a.created_date as ATO_create_date,
+             a.buyer_id as buyer_id,
+             a.hit_tag,
+             b.order_number
+
+      FROM
+      (
+        SELECT
+        created_date,
+        buyer_id,
+        order_tag,
+        case
+        when ARRAY_CONTAINS(COLLECT_LIST(hit_tag), 'R_4336701') then 'R_4336701'
+        else 'NULL'
+        end as hit_tag
+        from
+        (
+          select min(created_date) as created_date, -- want find the earliest case
+                 buyer_id,
+                 order_tag,
+                 hit_tag,
+                 venture
+          from
+          (
+            select *
+            from lzd_secapp_dev.byr_ato_case_sample
+            where venture = 'ID'
+            and order_tag = 1
+          )
+          --and hit_tag <> 'NULL'             -- Cancel the requirement on hit_tag
+          -- We allow some that not trigger the second verification
+          group by buyer_id, order_tag, venture, hit_tag
+        )
+        group by created_date, buyer_id, order_tag
+      )   a
+
+      left join
+      (
+        SELECT created_date,
+               buyer_id,
+               order_number,
+               hit_tag
+        from lzd_secapp_dev.byr_ato_case_sample
+        where order_tag = 1
+        and venture = 'ID'
+      ) b
+      on a.created_date = b.created_date and a.buyer_id = b.buyer_id and a.hit_tag = b.hit_tag
+      where a.buyer_id <> '\N'
+    )   a1
+
+    left join
+    (
+      select distinct
+      sales_order_id,
+      order_create_date,       --local time
+      buyer_id
+      from lazada_cdm.dwd_lzd_trd_core_create_di
+      where ds >= '20220201'
+      and venture = 'ID'
+    ) a2
+    on a1.order_number = a2.sales_order_id
+  )   tab
+  where tab.order_create_date >= '2022-02-01 00:00:00'  -- kick out those '\N'
+;
+
+---------------------------------------------------------------------------------------------------------------------------------------
+-- Find the Abnormal Login Time
+-- 1. find the frequent devices
+-- base1 have
+-- ATO_create_date, order_create_date, order_buyer_id, order_number, id_flag, hit_flag
+
+drop table if exists lazada_biz_sec_dev.black_acct_order_create_base1;
+create table if not exists lazada_biz_sec_dev.black_acct_order_create_base1 LIFECYCLE 600 as
+
+  select
+  ato_create_date,
+  order_create_date,
+  order_buyer_id,
+  order_number,
+  case
+  when diff_id = 0 then '0'
+  ELSE '1'
+  end as id_flag, -- 0表示create_buyer_id和order_buyer_id一致
+  CASE
+  when hit_tag = 'R_4336701' then '1'
+  else '0'
+  end as hit_flag -- 1表示触发二次验证
+  from lazada_biz_sec_dev.black_acct_order_create;
+
+
+-----------------------------------------------------------------------------------------------------------
+--1637 total cases
+-- base2 only have
+-- order_create_date, order_buyer_id, order_number
+
+drop table if exists lazada_biz_sec_dev.black_acct_order_create_base2;
+create table if not exists lazada_biz_sec_dev.black_acct_order_create_base2 LIFECYCLE 6000 as
+  select
+  a.order_create_date,
+  a.order_buyer_id,
+  b.order_number
+  from
+  (
+    select
+    --ato_create_date,
+    min(order_create_date) as order_create_date,
+    order_buyer_id
+    from lazada_biz_sec_dev.black_acct_order_create_base1
+    group by order_buyer_id
+  )   a
+  left join
+  (
+    select distinct
+    order_create_date,
+    order_buyer_id,
+    order_number
+    from  lazada_biz_sec_dev.black_acct_order_create_base1
+  )   b
+  on a.order_create_date = b.order_create_date and a.order_buyer_id = b.order_buyer_id
+;
+
+drop table if exists lazada_biz_sec_dev.black_acct_order_create_base25;
+create table if not exists lazada_biz_sec_dev.black_acct_order_create_base25 LIFECYCLE 6000 as
+  SELECT
+  max(ato_create_date) as ato_create_date, -- idea is, for the latest ato_create_date, the case is more likely to be solved,
+  order_create_date,
+  order_buyer_id,
+  order_number
+  FROM
+  (
+    SELECT
+    b.ato_create_date,
+    a.*
+    from lazada_biz_sec_dev.black_acct_order_create_base2   a
+    left JOIN
+    (
+      SELECT
+      order_number,
+      order_buyer_id,
+      ato_create_date
+      from lazada_biz_sec_dev.black_acct_order_create_base1
+    )   b
+    on a.order_buyer_id = b.order_buyer_id and a.order_number = b.order_number
+  )
+  group by order_create_date, order_buyer_id, order_number
+;
+
+
+-----------------------------------------------------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.black_acct_freq_umid;
+create table if not exists lazada_biz_sec_dev.black_acct_freq_umid LIFECYCLE 6000 as
+
+  select
+  tab.order_buyer_id,
+  tab.umid,
+  count(1) as cnt_umid_login
+  from
+  (
+    SELECT a.order_buyer_id,
+           b.umid
+    FROM lazada_biz_sec_dev.black_acct_order_create_base2   a
+    left join
+    (
+      SELECT umid,
+             acctdata_userid
+      FROM lzd_secods.odl_event_async_lazada_login_success
+      where SUBSTR(ds,1,8) >= '20220201' and SUBSTR(ds,1,8) <= '20220601'
+      and acsdata_cntry = 'id'
+      and otherdata_issucc = 'true'
+      and acctdata_bizrole = 'byr'
+    )   b
+    on a.order_buyer_id = b.acctdata_userid
+  )   tab
+  group by tab.order_buyer_id, tab.umid
+;
+
+
+------------------------------------------------------------------------------------------------------------
+-- construct the table that,
+-- 1. different umid in [2,9]
+-- 2. max login umid times >= 4
+drop table if exists lazada_biz_sec_dev.black_acct_order_create_base3;
+create table if not exists lazada_biz_sec_dev.black_acct_order_create_base3 LIFECYCLE 6000 as
+
+  select
+  a1.order_buyer_id,
+  a2.umid,
+  a1.freq_cnt_umid
+  from
+  (
+    SELECT
+    *
+    FROM
+    (
+      SELECT
+      a.order_buyer_id,
+      max(b.cnt_umid_login) as freq_cnt_umid
+      FROM
+      (
+        SELECT
+        order_buyer_id
+        from
+        (
+          select order_buyer_id,
+                 count(order_buyer_id) as umid_cnt
+          from lazada_biz_sec_dev.black_acct_freq_umid
+          group by order_buyer_id
+        )
+        where umid_cnt >= 2 and umid_cnt < 10
+      )   a
+
+      left join
+      lazada_biz_sec_dev.black_acct_freq_umid b
+
+      on  a.order_buyer_id = b.order_buyer_id
+      group by a.order_buyer_id
+    )
+    where freq_cnt_umid >=4
+  )   a1
+
+  left JOIN
+  (
+    select *
+    from lazada_biz_sec_dev.black_acct_freq_umid
+  )   a2
+  on a1.freq_cnt_umid = a2.cnt_umid_login and a1.order_buyer_id = a2.order_buyer_id
+;
+------------------------------------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.black_freq_umid;
+create table if not exists lazada_biz_sec_dev.black_freq_umid LIFECYCLE 6000 as
+
+  select
+  a2.ato_create_date,
+  a2.order_create_date,
+  a1.order_buyer_id,
+  a2.order_number,
+  a1.freq_umid
+  FROM
+  (
+    SELECT
+    a.order_buyer_id,
+    b.umid as freq_umid
+    FROM
+    (
+      select *
+      FROM
+      (
+        select order_buyer_id,
+               count(freq_cnt_umid) as flag
+        from lazada_biz_sec_dev.black_acct_order_create_base3
+        group by order_buyer_id
+      )
+      where flag = 1
+    )   a
+
+    left JOIN
+    (
+      SELECT order_buyer_id,
+             umid
+      from lazada_biz_sec_dev.black_acct_order_create_base3
+    )   b
+    on a.order_buyer_id = b.order_buyer_id
+  )   a1
+  left JOIN
+  (
+    select
+    order_create_date,
+    order_buyer_id,
+    order_number,
+    ato_create_date
+    from lazada_biz_sec_dev.black_acct_order_create_base25
+  )   a2
+
+  on a1.order_buyer_id = a2.order_buyer_id
+;
+
+
+-----------------------------------------------------------------------------------------------------------------
+-- 2. Find out the first abnormal login
+drop table if exists lazada_biz_sec_dev.black_all_umid;
+create table if not exists lazada_biz_sec_dev.black_all_umid LIFECYCLE 6000 as
+
+  select
+  a.ato_create_date,
+  a.order_create_date,
+  a.order_buyer_id,
+  a.order_number,
+  a.freq_umid,
+  b.login_date,
+  b.umid,
+  b.otherdata_issucc,
+  b.envdata_useragent,
+  b.logindata_logintype
+  from
+  (
+    select
+    ato_create_date,
+    order_create_date,
+    order_buyer_id,
+    order_number,
+    freq_umid
+    from lazada_biz_sec_dev.black_freq_umid
+  )   a
+  left JOIN
+  (
+    select
+    umid,
+    from_unixtime(receive_time/1000) as login_date,
+    acctdata_userid,
+    otherdata_issucc,
+    envdata_useragent,
+    logindata_logintype
+    from lzd_secods.odl_event_async_lazada_login_success
+    where substr(ds,1,8) >= '20220201' and substr(ds,1,8) <= '20220601'
+    and acsdata_cntry = 'id'
+    --and otherdata_issucc = 'true'
+    and acctdata_bizrole = 'byr'
+  )   b
+  on a.order_buyer_id = b.acctdata_userid
+;
+
+
+
+
+drop table if exists lazada_biz_sec_dev.black_all_umid_distinct;
+create table if not exists lazada_biz_sec_dev.black_all_umid_distinct LIFECYCLE 365 as
+
+  select distinct *,
+                  datediff(login_date, order_create_date,'mi') as date_diff
+  from lazada_biz_sec_dev.black_all_umid;
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------
+
+drop table if exists lazada_biz_sec_dev.black_before_tmp;
+create table if not exists lazada_biz_sec_dev.black_before_tmp LIFECYCLE 365 as
+
+
+  SELECT
+  a.ato_create_date,
+  a.order_create_date,
+  a.order_buyer_id,
+  a.order_number,
+  a.freq_umid,
+  b.login_date,
+  b.umid,
+  b.otherdata_issucc,
+  b.envdata_useragent,
+  b.logindata_logintype,
+  a.abnormal_date_diff
+  FROM
+  (
+    select
+    tmp.ato_create_date,
+    tmp.order_create_date,
+    tmp.order_buyer_id,
+    tmp.order_number,
+    tmp.freq_umid,
+    max(date_diff) as abnormal_date_diff
+    from
+    (
+    -- select non-freq_umid login
+      select *
+      from lazada_biz_sec_dev.black_all_umid_distinct
+      where date_diff < 0
+      and umid <> freq_umid
+      and logindata_logintype <> 'auto'
+      and otherdata_issucc = 'true'
+    )   tmp
+    group by tmp.ato_create_date, tmp.order_create_date, tmp.order_buyer_id, tmp.order_number, tmp.freq_umid
+  )   a
+  left JOIN
+  (
+    SELECT
+    *
+    from lazada_biz_sec_dev.black_all_umid_distinct
+    where otherdata_issucc = 'true'
+    and logindata_logintype <> 'auto'
+  )   b
+  on a.order_number = b.order_number and a.abnormal_date_diff = b.date_diff
+;
+
+--------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.black_before;
+create table if not exists lazada_biz_sec_dev.black_before LIFECYCLE 365 as
+
+
+  select
+  b.*,
+  c.cnt_umid_login
+  FROM
+  (
+    select order_number,
+           min(login_date) as login_date
+    from lazada_biz_sec_dev.black_before_tmp
+    group by order_number
+  )   a
+  left join
+  (
+    select *
+    from lazada_biz_sec_dev.black_before_tmp
+  )   b
+  on a.order_number = b.order_number and a.login_date = b.login_date
+  left join lazada_biz_sec_dev.black_acct_freq_umid   c
+  on b.order_buyer_id = c.order_buyer_id and b.umid = c.umid
+;
+
+----------------------------------------------------------------------------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.black_after_tmp;
+create table if not exists lazada_biz_sec_dev.black_after_tmp LIFECYCLE 365 as
+
+  SELECT
+  a.ato_create_date,
+  a.order_create_date,
+  a.order_buyer_id,
+  a.order_number,
+  a.freq_umid,
+  b.login_date,
+  b.umid,
+  b.otherdata_issucc,
+  b.envdata_useragent,
+  b.logindata_logintype,
+  a.abnormal_date_diff
+  FROM
+  (
+    select
+    tmp.ato_create_date,
+    tmp.order_create_date,
+    tmp.order_buyer_id,
+    tmp.order_number,
+    tmp.freq_umid,
+    min(date_diff) as abnormal_date_diff
+    from
+    (
+    -- select non-freq_umid login
+      select *
+      from lazada_biz_sec_dev.black_all_umid_distinct
+      where date_diff >= 0
+      and umid <> freq_umid
+      and logindata_logintype <> 'auto'
+      and otherdata_issucc = 'true'
+    )   tmp
+    group by tmp.ato_create_date, tmp.order_create_date, tmp.order_buyer_id, tmp.order_number, tmp.freq_umid
+  )   a
+  left JOIN
+  (
+    SELECT
+    *
+    from lazada_biz_sec_dev.black_all_umid_distinct
+    where otherdata_issucc = 'true'
+    and logindata_logintype <> 'auto'
+  )   b
+  on a.order_number = b.order_number and a.abnormal_date_diff = b.date_diff
+;
+
+--------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.black_after;
+create table if not exists lazada_biz_sec_dev.black_after LIFECYCLE 365 as
+
+  select
+  b.*,
+  c.cnt_umid_login
+  FROM
+  (
+    select order_number,
+           min(login_date) as login_date
+    from lazada_biz_sec_dev.black_after_tmp
+    group by order_number
+  )   a
+  left join
+  (
+    select *
+    from lazada_biz_sec_dev.black_after_tmp
+  )   b
+  on a.order_number = b.order_number and a.login_date = b.login_date
+  left join lazada_biz_sec_dev.black_acct_freq_umid   c
+  on b.order_buyer_id = c.order_buyer_id and b.umid = c.umid
+;
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.black_before_after;
+create table if not exists lazada_biz_sec_dev.black_before_after LIFECYCLE 365 as
+
+  select *
+  from
+  (
+    select
+    a.ato_create_date,
+    a.order_create_date,
+    a.order_buyer_id,
+    a.order_number,
+    a.freq_umid,
+    b.login_date as login_date_before,
+    b.umid as umid_before,
+    b.otherdata_issucc as issucc_before,
+    b.envdata_useragent as useragent_before,
+    b.logindata_logintype as logintype_before,
+    b.abnormal_date_diff as diff_before,
+    b.cnt_umid_login as cnt_umid_login_before,
+    c.login_date as login_date_after,
+    c.umid as umid_after,
+    c.otherdata_issucc as issucc_after,
+    c.envdata_useragent as useragent_after,
+    c.logindata_logintype as logintype_after,
+    c.abnormal_date_diff as diff_after,
+    c.cnt_umid_login as cnt_umid_login_after
+
+    FROM lazada_biz_sec_dev.black_freq_umid a
+    left join
+    (
+      select *
+      FROM lazada_biz_sec_dev.black_before
+      where cnt_umid_login <= 10
+    )   b
+    on a.order_number = b.order_number
+    left JOIN
+    (
+      select *
+      from lazada_biz_sec_dev.black_after
+      where cnt_umid_login <= 10
+    )   c
+    on a.order_number = c.order_number
+  )
+  where (cnt_umid_login_before is Null and cnt_umid_login_after is not Null)
+  or (cnt_umid_login_before is not Null and cnt_umid_login_after is Null)
+  or (cnt_umid_login_before is not Null and cnt_umid_login_after is not Null and umid_before = umid_after)
+;
+
+------------------------------------------------------------------------------------------------------
+-- Find the abnormal login umid and corresponding first records
+
+drop table if exists lazada_biz_sec_dev.black_abnormal_umid;
+create table if not exists lazada_biz_sec_dev.black_abnormal_umid LIFECYCLE 365 as
+  select
+  ato_create_date,
+  order_create_date,
+  order_buyer_id,
+  order_number,
+  freq_umid,
+  CASE
+  when umid_before is Null then umid_after
+  when umid_after is Null then umid_before
+  else umid_after
+  end as abnormal_umid
+  from lazada_biz_sec_dev.black_before_after
+;
+
+
+drop table if exists lazada_biz_sec_dev.black_abnormal_umid_total_login;
+create table if not exists lazada_biz_sec_dev.black_abnormal_umid_total_login LIFECYCLE 365 as
+
+  select a.ato_create_date,
+         a.order_create_date,
+         a.order_number,
+         a.order_buyer_id,
+         a.freq_umid,
+         a.abnormal_umid,
+         b.login_date,
+         b.ip,
+         b.useragent,
+         b.acsdata_entrance,
+         b.app_version,
+         b.ipparse_ipisp,
+         b.ipparse_ipcntryname,
+         b.ipparse_ipprovname,
+         b.logindata_logintype
+  from lazada_biz_sec_dev.black_abnormal_umid a
+  left join
+  (
+    select umid,
+           from_unixtime(receive_time/1000) as login_date,
+           envdata_ip as ip,
+           envdata_useragent as useragent,
+           acctdata_userid,
+           acsdata_entrance,
+           appdata_appver as app_version,
+           ipparse_ipisp,
+           ipparse_ipcntryname,
+           logindata_logintype,
+           ipparse_ipprovname
+    from lzd_secods.odl_event_async_lazada_login_success
+    where substr(ds,1,8) >= '20220201' and substr(ds,1,8) <= '20220601'
+    and acsdata_cntry = 'id'
+    and otherdata_issucc = 'true'
+    and acctdata_bizrole = 'byr'
+  )   b
+  on a.order_buyer_id = b.acctdata_userid and a.abnormal_umid = b.umid
+;
+
+
+drop table if exists lazada_biz_sec_dev.black_ato_login_sample;
+create table if not exists lazada_biz_sec_dev.black_ato_login_sample LIFECYCLE 365 as
+  SELECT
+  b.ato_create_date,
+  b.order_create_date,
+  b.order_number,
+  a.order_buyer_id,
+  b.freq_umid,
+  b.abnormal_umid,
+  a.earliest_abnormal_login,
+  b.ip,
+  b.useragent,
+  b.acsdata_entrance,
+  b.app_version,
+  b.ipparse_ipisp,
+  b.ipparse_ipcntryname,
+  b.ipparse_ipprovname,
+  b.logindata_logintype
+  FROM
+  (
+    select
+    order_buyer_id,
+    min(login_date) as earliest_abnormal_login
+    from lazada_biz_sec_dev.black_abnormal_umid_total_login
+    group by order_buyer_id
+  )   a
+  LEFT  JOIN
+  lazada_biz_sec_dev.black_abnormal_umid_total_login  b
+  on a.order_buyer_id = b.order_buyer_id and a.earliest_abnormal_login = b.login_date
+;
+
+------------------------------------------------------------------------------------------------------
+select * from lazada_biz_sec_dev.black_ato_login_sample;
+
+select ipparse_ipisp, count(order_number) from lazada_biz_sec_dev.black_ato_login_sample group by ipparse_ipisp;
+select ipparse_ipprovname, count(order_buyer_id) from lazada_biz_sec_dev.black_ato_login_sample group by ipparse_ipprovname;
+
+select *
+from lazada_biz_sec_dev.black_ato_login_sample;
+
+
+-- find those seller_scam ATO
+select
+*,
+case when earliest_abnormal_login >= order_create_date then '1'
+     else '0' end as flag_seller_scam_ATO
+from lazada_biz_sec_dev.black_ato_login_sample
+where order_buyer_id in (select distinct buyer_id from lazada_biz_sec_dev.black_ato_scam_seller_v2);
+

@@ -1,0 +1,237 @@
+--name:ATO_login_v2_white_samples
+--author:jiangyi.wang
+--create time:2022-08-11 10:39
+--********************************************************************--
+
+-- two parts: (normal login part) + (abnormal login part)
+-- both are based on case analysis selection
+
+SET odps.instance.priority = 0;
+
+drop table if exists lazada_biz_sec_dev.white_acct_list_v2;
+create table if not exists lazada_biz_sec_dev.white_acct_list_v2 LIFECYCLE 60 as
+
+  SELECT
+  a.user_id,
+  a.cnt_suspicious_pay,
+  b.cnt_distinct_cust,
+  b.cnt_distinct_shpadd
+  from
+  (
+    SELECT
+    a.user_id,
+    sum(a.indicator_ATO) as cnt_suspicious_pay
+    from
+    (
+      select
+      user_id,
+      case when (url like '%wallet%') or (url like '%bank-add%') or (url like '%bank-list%') or (url like '%info-change%') then '1'
+           else '0'
+           end as indicator_ATO -- 1 represents suspicious, 0 represents non-suspicious
+      from alilog.dwd_lzd_log_ut_pv_di
+      where ds >= '20220301' and ds <= '20220601'
+      and venture = 'ID'
+      and user_id > 0
+      and url_type = 'other'
+    ) a
+    group by a.user_id
+  )   a
+  left JOIN
+  (
+    SELECT
+    buyer_id,
+    count(distinct shipping_address) as cnt_distinct_shpadd,
+    count(distinct shipping_customer_name) as cnt_distinct_cust
+    from lazada_cdm.dwd_lzd_trd_core_create_di
+    where ds >= '20220301' and ds <= '20220601'
+    and venture = 'ID'
+    group by buyer_id
+  )   b
+  on a.user_id = b.buyer_id
+;
+
+---------------------------------------------------------------------------------
+select count(1) from lazada_biz_sec_dev.white_acct_list_v2
+where cnt_suspicious_pay = 0
+and cnt_distinct_cust = 1
+and cnt_distinct_shpadd = 1
+;
+
+---------------------------------------------------------------------------------
+set odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_acct_logrec_base_v2;
+create table if not exists lazada_biz_sec_dev.white_acct_logrec_base_v2 LIFECYCLE 60 as
+
+  select
+  a.user_id as user_id,
+  b.umid,
+  b.receive_time,
+  b.envdata_useragent,
+  b.envdata_ip,
+  b.acsdata_entrance,
+  b.logindata_logintype,
+  b.ipparse_ipisp,
+  b.previous_umid_list
+  from
+  (
+    select
+    user_id
+    from lazada_biz_sec_dev.white_acct_list_v2
+    where cnt_suspicious_pay = 0
+    and cnt_distinct_cust = 1
+    and cnt_distinct_shpadd = 1
+  )   a
+  left join
+  (
+    SELECT
+    a1.*,
+    collect_list(distinct a2.umid) as previous_umid_list
+    FROM
+    (
+      select
+      acctdata_userid,
+      from_unixtime(receive_time/1000) as receive_time,
+      umid,
+      envdata_useragent,
+      logindata_logintype,
+      ipparse_ipisp,
+      envdata_ip,
+      acsdata_entrance
+      from lzd_secods.odl_event_async_lazada_login_success
+      where substr(ds,1,8) >= '20220301' and substr(ds,1,8) <= '20220601'
+      and acsdata_cntry = 'id'
+      and otherdata_issucc = 'true'
+      and acctdata_bizrole = 'byr'
+    )   a1
+    left join
+    (
+      SELECT
+      acctdata_userid,
+      from_unixtime(receive_time/1000) as receive_time,
+      umid
+      from lzd_secods.odl_event_async_lazada_login_success
+      where substr(ds,1,8) >= '20211201' and substr(ds,1,8) <= '20220601'
+      and acsdata_cntry = 'id'
+      and otherdata_issucc = 'true'
+      and acctdata_bizrole = 'byr'
+    )   a2
+    on DATEDIFF(a1.receive_time, a2.receive_time, 'mm') <= 4 and a1.receive_time > a2.receive_time
+    and a1.acctdata_userid = a2.acctdata_userid
+    group by a1.acctdata_userid, a1.receive_time, a1.umid, a1.envdata_useragent, a1.logindata_logintype, a1.ipparse_ipisp, a1.envdata_ip, a1.acsdata_entrance
+  )   b
+  on a.user_id = b.acctdata_userid
+;
+
+---------------------------------------------------------------------------------
+set odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_acct_logrec_base2_v2;
+create table if not exists lazada_biz_sec_dev.white_acct_logrec_base2_v2 LIFECYCLE 60 as
+
+  SELECT
+  user_id,
+  umid,
+  receive_time,
+  envdata_useragent,
+  logindata_logintype,
+  ipparse_ipisp,
+  envdata_ip,
+  acsdata_entrance,
+  previous_umid_list
+  FROM
+  (
+    select
+    user_id,
+    umid,
+    receive_time,
+    envdata_useragent,
+    logindata_logintype,
+    ipparse_ipisp,
+    envdata_ip,
+    acsdata_entrance,
+    case when ARRAY_CONTAINS(previous_umid_list, umid) then 0
+         else 1 end as new_umid_flag,
+    previous_umid_list
+    from lazada_biz_sec_dev.white_acct_logrec_base_v2
+    where size(previous_umid_list) <> 0
+    and previous_umid_list is not Null
+  )
+  where new_umid_flag = 1
+;
+---------------------------------------------------------------------------------
+select * from lazada_biz_sec_dev.white_acct_logrec_base2_v2;
+---------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_v2;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_v2 LIFECYCLE 30 as
+
+  select
+  user_id,
+  umid, -- normal umid
+  receive_time as login_date,
+  envdata_ip as ip,
+  envdata_useragent as useragent,
+  acsdata_entrance,
+  logindata_logintype
+  from lazada_biz_sec_dev.white_acct_logrec_base2_v2
+  where logindata_logintype <> 'auto'
+  order by RAND()
+  limit 1500
+;
+---------------------------------------------------------------------------------
+select * from lazada_biz_sec_dev.white_ato_login_sample_v2;
+---------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_v3_total;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_v3_total LIFECYCLE 30 as
+
+  select
+  a.*,
+  count(sales_order_id) as order_number
+  FROM
+  (
+    select
+    user_id,
+    umid, -- normal umid
+    receive_time as login_date,
+    envdata_ip as ip,
+    envdata_useragent as useragent,
+    acsdata_entrance,
+    logindata_logintype
+    from lazada_biz_sec_dev.white_acct_logrec_base2_v2
+    where logindata_logintype <> 'auto'
+  )   a
+  left JOIN
+  (
+    select distinct
+    buyer_id,
+    sales_order_id,
+    dateadd(order_create_date, 1, 'hour') as order_create_date
+    from lazada_cdm.dwd_lzd_trd_core_create_di
+    where ds >= '20220201' and ds <= '20220601'
+    and venture = 'ID'
+  )   b
+  on a.user_id = b.buyer_id
+  and datediff(a.login_date, b.order_create_date, 'dd') <= 14 and a.login_date >= b.order_create_date
+  group by a.user_id, a.umid, a.login_date, a.ip, a.useragent, a.acsdata_entrance, a.logindata_logintype
+;
+---------------------------------------------------------------------------------
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_v3 LIFECYCLE 30 as
+
+  SELECT
+  *
+  from lazada_biz_sec_dev.white_ato_login_sample_v3_total
+  where order_number > 0
+  order by RAND()
+  limit 4500
+  union ALL
+  (
+    SELECT
+    *
+    from lazada_biz_sec_dev.white_ato_login_sample_v3_total
+    where order_number = 0
+    order by RAND()
+    limit 1500
+  )
+;
+---------------------------------------------------------------------------------
+select * from lazada_biz_sec_dev.white_ato_login_sample_v3;
+

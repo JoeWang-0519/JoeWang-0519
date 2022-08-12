@@ -1,0 +1,138 @@
+--name:ATO_login_v2_offline_table_create
+--author:jiangyi.wang
+--create time:2022-08-11 11:09
+--********************************************************************--
+drop table if EXISTS ato_login_v2_offline_tab_01;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_01
+(
+  buyer_id                        STRING,
+  venture                         STRING,
+  ip2_list                        string
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_02;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_02
+(
+  buyer_id                        STRING,
+  venture                         STRING,
+  ip3_list                        string
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_03;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_03
+(
+  buyer_id                STRING,
+  venture                 STRING,
+  count_unique_umid_14d   BIGINT,
+  count_unique_ip2_14d    BIGINT,
+  count_login_14d         BIGINT
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_04;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_04
+(
+  buyer_id                        STRING,
+  venture                         STRING,
+  ip3_list                        string
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_05;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_05
+(
+  buyer_id                                STRING,
+  venture                                 STRING,
+  umid_list                               string
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_06;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_06
+(
+  buyer_id                                STRING,
+  venture                                 STRING,
+  avg_price_per_order_usd_14d             DOUBLE,
+  std_price_per_order_usd_14d             DOUBLE,
+  avg_dscnt_rate_per_order_usd_14d        DOUBLE,
+  std_dscnt_rate_per_order_usd_14d        DOUBLE,
+  avg_shpfee_per_order_usd_14d            DOUBLE,
+  std_shpfee_per_order_usd_14d            DOUBLE
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_07;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_07
+(
+  buyer_id                                STRING,
+  venture                                 STRING,
+  susp_payment_method_14d                 BIGINT
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_08;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_08
+(
+  umid                                    STRING,
+  venture                                 STRING,
+  count_acct_same_umid_14d                BIGINT
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_09;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_09
+(
+  buyer_id                                STRING,
+  venture                                 STRING,
+  max_cancel_rate_14d                     DOUBLE,
+  max_avg_price_seller_usd_14d            DOUBLE,
+  max_avg_dscnt_rate_seller_usd_14d       DOUBLE,
+  max_avg_shpfee_seller_usd_14d           DOUBLE
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_10;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_10
+(
+  buyer_id                                STRING,
+  venture                                 STRING,
+  umid_list                               string
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+drop table if EXISTS ato_login_v2_offline_tab_11;
+CREATE TABLE IF NOT EXISTS ato_login_v2_offline_tab_11
+(
+  buyer_id                                STRING,
+  venture                                 STRING,
+  count_login_3m                          BIGINT
+)
+PARTITIONED BY (ds STRING)
+LIFECYCLE 365
+;
+
+
+
+

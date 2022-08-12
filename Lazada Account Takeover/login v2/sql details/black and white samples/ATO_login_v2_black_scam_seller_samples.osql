@@ -1,0 +1,28 @@
+--name:ATO_login_v2_black_samples
+--author:jiangyi.wang
+--create time:2022-08-11 10:39
+--********************************************************************--
+
+-- Focus on those scam sellers black cases
+
+drop table if exists lazada_biz_sec_dev.black_ato_scam_seller_v2;
+create table if not exists lazada_biz_sec_dev.black_ato_scam_seller_v2 LIFECYCLE 60 as
+
+  SELECT
+  created_date,
+  buyer_id,
+  seller_id,
+  order_number
+  FROM  lazada_ads.ads_lzd_xspace_cases_df
+  WHERE ds = MAX_PT('lazada_ads.ads_lzd_xspace_cases_df')
+  AND substr(created_date,1,10)>='2022-02-21' AND substr(created_date,1,10)<='2022-06-01'
+  AND case_type = 'Child'    ---子订单
+  AND service_type='CSC'      ---买家
+  and (TOLOWER(final_contact_reason) LIKE '%account take%'    ---账号被盗ATO
+  OR TOLOWER(final_contact_reason) LIKE '%suspicious transaction on lazada%')  ---ATO & ST
+  and (length(order_number)=15 OR length(order_number)=14)
+  and  (TOLOWER(serv_tag_name) LIKE '%scam seller%')
+  AND venture='ID'
+;
+
+select distinct buyer_id from lazada_biz_sec_dev.black_ato_scam_seller_v2;

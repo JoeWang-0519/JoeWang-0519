@@ -1,0 +1,29 @@
+--name:ATO_order_create_v1_black_samples
+--author:jiangyi.wang
+--create time:2022-08-11 18:26
+--********************************************************************--
+
+
+-- BLACK
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base1;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base1 LIFECYCLE 30 as
+
+  select
+  order_buyer_id,
+  abnormal_umid,
+  earliest_abnormal_login
+  FROM
+  (
+    SELECT
+    order_buyer_id,
+    abnormal_umid,
+    earliest_abnormal_login,
+    case when order_buyer_id in (SELECT distinct buyer_id from lazada_biz_sec_dev.black_ato_scam_seller_v2) then '0'
+         else '1' end as direct_ato_flag
+    from lazada_biz_sec_dev.black_ato_login_sample
+    where acsdata_entrance = 'native'
+    and order_create_date > earliest_abnormal_login
+  )
+  where direct_ato_flag = 1
+;

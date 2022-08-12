@@ -1,0 +1,103 @@
+--name:ATO_pay_render_white_samples
+--author:jiangyi.wang
+--create time:2022-08-12 15:53
+--********************************************************************--
+
+select * from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base3;
+
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_base3;
+create table if not exists lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_base3 LIFECYCLE 30 as
+
+  SELECT
+  a.order_buyer_id
+  ,a.orderid
+  ,a.order_create_time
+  ,max(b.pay_render_time) as pay_render_time   -- the closest pay render time with respect to order create time
+  ,a.login_time
+  from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base3    a
+  left JOIN
+  (
+    SELECT
+    FROM_UNIXTIME(receive_time/1000)                        as pay_render_time
+    ,globlbyracct_havanauserid                               as order_buyer_id
+    from lzd_secods.odl_event_lazada_global_pay_render_sync
+    where substr(ds,1,8) >= '20220320' and substr(ds,1,8) <= '20220601'
+  )   b
+  on a.order_buyer_id = b.order_buyer_id
+  and b.pay_render_time <= a.order_create_time and DATEDIFF(a.order_create_time, b.pay_render_time, 'dd') < 5
+  group BY
+  a.order_buyer_id
+  ,a.orderid
+  ,a.order_create_time
+  ,a.login_time
+;
+
+select * from lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_base3
+where order_buyer_id = '10942922';
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_click;
+create table if not exists lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_click LIFECYCLE 30 as
+  SELECT
+  a.order_buyer_id,
+  a.orderid,
+  a.pay_render_time,
+  wm_CONCAT(',',b.spam) within group(order by b.visit_time, b.local_time) as features,
+  collect_list(b.spam) within group(order by b.visit_time, b.local_time) as spam_list,
+  sum(b.page_stay_time) as total_stay_time,
+  avg(b.page_stay_time) as average_stay_time
+  from
+  (
+    select *
+    from lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_base3
+    where order_buyer_id is not Null
+    and pay_render_time is not Null
+  )   a
+  left join
+  (
+    SELECT
+    local_time,
+    url,
+    visit_time,
+    user_id,
+    split_part(spm_id, '.', 2) as spam,
+    utdid,
+    page_stay_time
+    from alilog.dwd_lzd_log_ut_pv_di
+    where ds >= '20220401' and ds <= '20220602'
+    and venture = 'ID'
+  )   b
+  on a.pay_render_time >= b.local_time and a.login_time <= b.local_time and a.order_buyer_id = b.user_id
+  group by a.order_buyer_id, a.orderid, a.pay_render_time
+;
+
+
+select *
+from lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_click
+limit 100;
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.ato_pay_render_v1_exp1_click;
+create table if not exists lazada_biz_sec_dev.ato_pay_render_v1_exp1_click LIFECYCLE 30 as
+
+  select
+  1 as label,
+  TO_CHAR(order_buyer_id) as order_buyer_id,
+  orderid,
+  pay_render_time,
+  features,
+  spam_list,
+  total_stay_time,
+  average_stay_time
+  from lazada_biz_sec_dev.black_ato_pay_render_v1_exp1_click
+  union ALL
+  (
+    select
+    0 as label,
+    *
+    from lazada_biz_sec_dev.white_ato_pay_render_v1_exp1_click
+    where features is not null
+  )
+;

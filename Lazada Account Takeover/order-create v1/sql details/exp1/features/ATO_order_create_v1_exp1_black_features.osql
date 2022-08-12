@@ -1,0 +1,237 @@
+--name:ATO_order_create_v1_exp1_features
+--author:jiangyi.wang
+--create time:2022-08-11 18:25
+--********************************************************************--
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base2;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base2 LIFECYCLE 30 as
+
+  SELECT
+  a.*,
+  b.orderid,
+  b.order_create_time
+  FROM lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base1 a
+  left join
+  (
+    SELECT
+    event_id,
+    orderid,
+    from_unixtime(receive_time/1000) as order_create_time,
+    byracctid,
+    umid
+    from lzd_secods.odl_event_lazada_order_creation_risk_sg
+    where substr(ds,1,8) >= '20220201' and substr(ds,1,8) <= '20220620'
+  )   b
+  on a.order_buyer_id = b.byracctid and a.abnormal_umid = b.umid
+;
+
+select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base2;
+-- 10 records do not have corresponding order
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base3;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base3 LIFECYCLE 30 as
+
+  SELECT
+  a.*,
+  b.event_id,
+  b.login_time,
+  b.envdata_utdid,
+  datediff(a.order_create_time, b.login_time, 'ss') as date_diff
+  from
+  (
+    select
+    order_buyer_id,
+    abnormal_umid,
+    earliest_abnormal_login,
+    orderid,
+    max(order_create_time) as order_create_time -- exist case that same orderid has several create time
+    from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base2
+    where order_create_time >= '2022-01-01 00:00:00'
+    group by order_buyer_id, orderid, abnormal_umid, earliest_abnormal_login
+  )   a
+  left join
+  (
+    SELECT distinct
+    event_id,
+    acctdata_userid,
+    umid,
+    envdata_utdid,
+    from_unixtime(receive_time/1000) as login_time
+    FROM lzd_secods.odl_event_async_lazada_login_success
+    where substr(ds,1,8) >= '20220201' and substr(ds,1,8) <= '20220620'
+  )   b
+  on a.order_buyer_id = b.acctdata_userid and a.abnormal_umid = b.umid
+  and DATEDIFF(a.order_create_time, b.login_time, 'mi') > 0
+  and DATEDIFF(a.order_create_time, b.login_time, 'dd') < 5
+;
+
+select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base3;
+
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base4;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base4 LIFECYCLE 30 as
+
+  SELECT
+  b.*
+  from
+  (
+    select
+    order_buyer_id,
+    orderid,
+    min(date_diff) as min_date_diff
+    from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base3
+    group by order_buyer_id, orderid
+  )   a
+  left JOIN
+  (
+    SELECT
+    *
+    from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base3
+  )   b
+  on a.order_buyer_id = b.order_buyer_id and a.orderid = b.orderid and a.min_date_diff = b.date_diff
+;
+
+select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base4;
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_fst_null;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_fst_null LIFECYCLE 30 as
+
+  SELECT
+  a.order_buyer_id,
+  a.orderid,
+  a.order_create_time,
+  wm_CONCAT(',',b.spam) within group(order by b.visit_time, b.local_time) as features,
+  collect_list(b.spam) within group(order by b.visit_time, b.local_time) as spam_list,
+  sum(b.page_stay_time) as total_stay_time,
+  avg(b.page_stay_time) as average_stay_time
+  from
+  (
+    select *
+    from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base4
+    where envdata_utdid is NULL
+    and SUBSTR(order_create_time,1,10) < '2022-04-01'
+    and order_buyer_id is not Null
+  )   a
+  left join
+  (
+    SELECT
+    local_time,
+    url,
+    visit_time,
+    user_id,
+    split_part(spm_id, '.', 2) as spam,
+    utdid,
+    page_stay_time
+    from alilog.dwd_lzd_log_ut_pv_di
+    where ds >= '20220201' and ds <= '20220401'
+    and venture = 'ID'
+  )   b
+  on a.order_create_time >= b.local_time and a.login_time <= b.local_time and a.order_buyer_id = b.user_id
+  group by a.order_buyer_id, a.orderid, a.order_create_time
+;
+
+select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_fst_null;
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_not_null;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_not_null LIFECYCLE 30 as
+
+  SELECT
+  a.order_buyer_id,
+  a.orderid,
+  a.order_create_time,
+  wm_CONCAT(',',b.spam) within group(order by b.visit_time, b.local_time) as features,
+  collect_list(b.spam) within group(order by b.visit_time, b.local_time) as spam_list,
+  sum(b.page_stay_time) as total_stay_time,
+  avg(b.page_stay_time) as average_stay_time
+  from
+  (
+    select *
+    from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base4
+    where envdata_utdid is not NULL
+    and SUBSTR(order_create_time,1,10) <= '2022-06-01' and SUBSTR(order_create_time,1,10) >= '2022-04-01'
+    and order_buyer_id is not Null
+  )   a
+  left join
+  (
+    SELECT
+    local_time,
+    url,
+    visit_time,
+    user_id,
+    split_part(spm_id, '.', 2) as spam,
+    utdid,
+    page_stay_time
+    from alilog.dwd_lzd_log_ut_pv_di
+    where ds >= '20220401' and ds <= '20220601'
+    and venture = 'ID'
+  )   b
+  on a.order_create_time >= b.local_time and a.login_time <= b.local_time and a.order_buyer_id = b.user_id and a.envdata_utdid = b.utdid
+  group by a.order_buyer_id, a.orderid, a.order_create_time
+;
+
+select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_not_null;
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_null;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_null LIFECYCLE 30 as
+
+  SELECT
+  a.order_buyer_id,
+  a.orderid,
+  a.order_create_time,
+  wm_CONCAT(',',b.spam) within group(order by b.visit_time, b.local_time) as features,
+  collect_list(b.spam) within group(order by b.visit_time, b.local_time) as spam_list,
+  sum(b.page_stay_time) as total_stay_time,
+  avg(b.page_stay_time) as average_stay_time
+  from
+  (
+    select *
+    from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base4
+    where envdata_utdid is NULL
+    and SUBSTR(order_create_time,1,10) <= '2022-06-01' and SUBSTR(order_create_time,1,10) >= '2022-04-01'
+    and order_buyer_id is not Null
+  )   a
+  left join
+  (
+    SELECT
+    local_time,
+    url,
+    visit_time,
+    user_id,
+    split_part(spm_id, '.', 2) as spam,
+    utdid,
+    page_stay_time
+    from alilog.dwd_lzd_log_ut_pv_di
+    where ds >= '20220401' and ds <= '20220601'
+    and venture = 'ID'
+  )   b
+  on a.order_create_time >= b.local_time and a.login_time <= b.local_time and a.order_buyer_id = b.user_id
+  group by a.order_buyer_id, a.orderid, a.order_create_time
+;
+
+select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_null;
+
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_click;
+create table if not exists lazada_biz_sec_dev.black_ato_order_create_v1_exp1_click LIFECYCLE 30 as
+
+  select *
+  from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_fst_null
+  union ALL
+  (
+    select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_null
+  )
+  union all
+  (
+    select * from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_base5_scd_not_null
+  )
+;
+
+
+
+

@@ -1,0 +1,514 @@
+--name:ATO_login_v2_offline_features
+--author:jiangyi.wang
+--create time:2022-08-11 11:03
+--********************************************************************--
+
+--------------------table 01--------------------------------------------
+WITH buyer_login_90d AS
+(
+  select   cast(mbr_id as string)                                                   as mbr_id
+  ,concat(split_part(client_ip,'.',1),'.', split_part(client_ip,'.',2))     as ip2
+  ,venture                                                                  as venture
+  from lzd_secdw.dwd_lzd_mbr_login_ent_di
+  where ds between '${bizdate_89d}' and '${bizdate}'
+  and mbr_type = 'byr'
+  group by mbr_id
+  ,ip2
+  ,venture
+
+  union
+
+  select acctdata_userid                                                            as mbr_id
+  ,concat(split_part(envdata_ip,'.',1),'.', split_part(envdata_ip,'.',2))     as ip2
+  ,TOUPPER(COALESCE(acsdata_cntry,'null'))                                    as venture
+  from lzd_secods.odl_event_async_lazada_login_success
+  where substr(ds,1,8) = '${today}'  --取今天的数据
+  and acctdata_bizrole = 'byr'
+  and perf_test = 'false'
+  group by mbr_id
+  ,ip2
+  ,venture
+)
+
+insert overwrite table ato_login_v2_offline_tab_01 PARTITION(ds = '${today_hour}')
+
+  SELECT
+  mbr_id                         as buyer_id
+  ,venture                        as venture
+  ,wm_concat(',',ip2)     as ip2_list
+
+  FROM buyer_login_90d
+  group BY
+  buyer_id
+  ,venture
+;
+
+--------------------table 02--------------------------------------------
+
+WITH buyer_login_90d AS
+(
+  select   cast(mbr_id as string)                                                   as mbr_id
+  ,concat(split_part(client_ip,'.',1),'.', split_part(client_ip,'.',2), split_part(client_ip, '.', 3))
+           as ip3
+  ,venture                                                                  as venture
+  from lzd_secdw.dwd_lzd_mbr_login_ent_di
+  where ds between '${bizdate_89d}' and '${bizdate}'
+  and mbr_type = 'byr'
+  group by mbr_id
+  ,ip3
+  ,venture
+
+
+  union
+  select acctdata_userid                                                            as mbr_id
+  ,concat(split_part(envdata_ip,'.',1),'.', split_part(envdata_ip,'.',2), split_part(envdata_ip, '.', 3))
+         as ip3
+  ,TOUPPER(COALESCE(acsdata_cntry,'null'))                                    as venture
+
+  from lzd_secods.odl_event_async_lazada_login_success
+  where substr(ds,1,8) = '${today}'  --取今天的数据
+  and acctdata_bizrole = 'byr'
+  and perf_test = 'false'
+  group by mbr_id
+  ,ip3
+  ,venture
+
+)
+
+insert overwrite table ato_login_v2_offline_tab_02 PARTITION(ds = '${today_hour}')
+
+  SELECT
+  mbr_id                         as buyer_id
+  ,venture                        as venture
+  ,wm_concat(',', ip3)     as ip3_list
+  FROM buyer_login_90d
+  group BY
+  buyer_id
+  ,venture
+;
+
+
+--------------------table 03--------------------------------------------
+WITH buyer_login_14d AS
+(
+  select   cast(mbr_id as string)                                                   as mbr_id
+  ,umid                                                                     as umid
+  ,concat(split_part(client_ip,'.',1),'.', split_part(client_ip,'.',2))     as ip2
+  ,venture                                                                  as venture
+  from lzd_secdw.dwd_lzd_mbr_login_ent_di
+  where ds between '${bizdate_13d}' and '${bizdate}'
+  and mbr_type = 'byr'
+
+  union all
+  select acctdata_userid                                                            as mbr_id
+  ,umid                                                                       as umid
+  ,concat(split_part(envdata_ip,'.',1),'.', split_part(envdata_ip,'.',2))
+         as ip2
+  ,TOUPPER(COALESCE(acsdata_cntry,'null'))                                    as venture
+  from lzd_secods.odl_event_async_lazada_login_success
+  where substr(ds,1,8) = '${today}'  --取今天的数据
+  and acctdata_bizrole = 'byr'
+  and perf_test = 'false'
+
+)
+
+insert overwrite table ato_login_v2_offline_tab_03 PARTITION(ds = '${today_hour}')
+
+  SELECT
+  mbr_id                     as buyer_id
+  ,venture
+  ,count(distinct umid)       as count_unique_umid_14d
+  ,count(distinct ip2)        as count_unique_ip2_14d
+  ,count(*)                   as count_login_14d
+  FROM buyer_login_14d
+  group BY
+  buyer_id
+  ,venture
+;
+
+--------------------table 04--------------------------------------------
+
+with buyer_14dorder_corresponding_sellers as
+(--获取近14天订单购买过的买家
+  select buyer_id                                      as buyer_id
+  ,seller_id                                     as seller_id
+  ,venture                                       as venture
+
+  from (select cast(byr_member_id as string )          as buyer_id
+  ,selllist                                as selllist
+  ,venture                                 as venture
+  from lzd_secdw.dwd_lzd_ord_crt_ent_di
+  where ds between '${bizdate_13d}' and '${bizdate}'-----过去的数据
+  union
+  select byracctid                        as buyer_id
+  ,selllist                         as selllist
+  ,toupper(lazadasite)              as venture
+  from lzd_secods.odl_event_lazada_order_creation_risk_sg
+  where substr(ds,1,8) = '${today}'  --取今天的数据 20220708
+  ) LATERAL VIEW explode(split(selllist ,','))  seller_id AS seller_id
+  group by buyer_id
+  ,seller_id
+  ,venture
+),
+
+  seller_90dlogin_info AS
+  (--关注sellser近3个月的登陆记录
+    select cast(mbr_id as string)              as mbr_id
+    ,client_ip                           as ip
+    ,venture                             as venture
+    from lzd_secdw.dwd_lzd_mbr_login_ent_di
+    where ds between '${bizdate_89d}' and '${bizdate}'   --89天到昨天
+    and mbr_id is not null
+    and mbr_type <> 'byr'
+    group by mbr_id
+    ,ip
+    ,venture
+    union
+    select acctdata_userid                            as mbr_id
+    ,envdata_ip                                 as ip
+    ,TOUPPER(COALESCE(acsdata_cntry,'null'))    AS venture
+    from lzd_secods.odl_event_async_lazada_login_success
+    where substr(ds,1,8) = '${today}'  --取今天的数据 20220708
+    and perf_test = 'false'
+    and acctdata_bizrole <> 'byr'
+    and acctdata_userid is not null
+    group by mbr_id
+    ,ip
+    ,venture
+  )
+
+insert overwrite table ato_login_v2_offline_tab_04 PARTITION(ds = '${today_hour}')
+
+  select  t1.buyer_id
+  ,t1.venture
+  ,wm_concat(',', t2.ip)     as seller_ip_list
+  from buyer_14dorder_corresponding_sellers t1
+  left join seller_90dlogin_info t2 on t1.venture = t2.venture and t1.seller_id = t2.mbr_id
+  group by
+  t1.buyer_id
+  ,t1.venture
+;
+
+
+--------------------table 05--------------------------------------------
+
+with buyer_14dorder_corresponding_sellers as
+(--获取近14天订单购买过的买家
+  select buyer_id                                      as buyer_id
+  ,seller_id                                     as seller_id
+  ,venture                                       as venture
+
+  from (select cast(byr_member_id as string )          as buyer_id
+  ,selllist                                as selllist
+  ,venture                                 as venture
+  from lzd_secdw.dwd_lzd_ord_crt_ent_di
+  where ds between '${bizdate_13d}' and '${bizdate}'-----过去的数据
+  union
+  select byracctid                        as buyer_id
+  ,selllist                         as selllist
+  ,toupper(lazadasite)              as venture
+  from lzd_secods.odl_event_lazada_order_creation_risk_sg
+  where substr(ds,1,8) = '${today}'  --取今天的数据 20220708
+  ) LATERAL VIEW explode(split(selllist ,','))  seller_id AS seller_id
+  group by buyer_id
+  ,seller_id
+  ,venture
+),
+
+  seller_90dlogin_info AS
+  (--关注sellser近3个月的登陆记录
+    select cast(mbr_id as string)                 as mbr_id
+    ,concat(split_part(client_ip,'.',1),'.', split_part(client_ip,'.',2), split_part(client_ip,'.',3), useragent)
+         as ip3ua
+    ,venture                                as venture
+    from lzd_secdw.dwd_lzd_mbr_login_ent_di
+    where ds between '${bizdate_89d}' and '${bizdate}'   --89天到昨天
+    and mbr_id is not null
+    and mbr_type <> 'byr'
+    group by mbr_id
+    ,ip3ua
+    ,venture
+    union
+    select acctdata_userid                            as mbr_id
+    ,concat(split_part(envdata_ip,'.',1),'.', split_part(envdata_ip,'.',2), split_part(envdata_ip,'.',3), envdata_useragent)
+           as ip3ua
+    ,TOUPPER(COALESCE(acsdata_cntry,'null'))    AS venture
+    from lzd_secods.odl_event_async_lazada_login_success
+    where substr(ds, 1, 8) = '${today}'  --取今天的数据 20220708
+    and perf_test = 'false'
+    and acctdata_bizrole <> 'byr'
+    and acctdata_userid is not null
+    group by mbr_id
+    ,ip3ua
+    ,venture
+  )
+
+insert overwrite table ato_login_v2_offline_tab_05 PARTITION(ds = '${today_hour}')
+
+  select  t1.buyer_id
+  ,t1.venture
+  ,wm_concat(',', t2.ip3ua)                  as seller_ip3ua_list
+  from buyer_14dorder_corresponding_sellers t1
+  left join seller_90dlogin_info t2 on t1.venture = t2.venture and t1.seller_id = t2.mbr_id
+  group by
+  t1.buyer_id
+  ,t1.venture
+;
+
+--------------------table 06--------------------------------------------
+insert overwrite table ato_login_v2_offline_tab_06 PARTITION(ds = '${today_hour}')
+
+  select
+  t1.buyer_id                    as buyer_id
+  ,t1.venture                     as venture
+  ,t1.avg_grosspay * t2.to_usd    as avg_price_per_order_usd_14d
+  ,t1.std_grosspay * t2.to_usd    as std_price_per_order_usd_14d
+  ,t1.avg_discount_rate           as avg_dscnt_rate_per_order_usd_14d
+  ,t1.std_discount_rate           as std_dscnt_rate_per_order_usd_14d
+  ,t1.avg_shpfee * t2.to_usd      as avg_shpfee_per_order_usd_14d
+  ,t1.std_shpfee * t2.to_usd      as std_shpfee_per_order_usd_14d
+  from
+  (
+    SELECT
+    buyer_id                 as buyer_id
+    ,venture                  as venture
+    ,avg(grosspay)            as avg_grosspay
+    ,stddev(grosspay)         as std_grosspay
+    ,avg(discount_rate)       as avg_discount_rate
+    ,stddev(discount_rate)    as std_discount_rate
+    ,avg(shpfee)              as avg_shpfee
+    ,stddev(shpfee)           as std_shpfee
+    from    (select
+    cast(byr_member_id  as string)   as buyer_id
+    ,gross_pay_amt                    as grosspay
+    ,vouch_amt/gross_pay_amt          as discount_rate
+    ,shp_amt                          as shpfee
+    ,venture                          as venture
+    from lzd_secdw.dwd_lzd_ord_crt_ent_di
+    where ds between '${bizdate_13d}' and '${bizdate}'
+    union all
+    select
+    byracctid                       as buyer_id
+    ,cast(grosspay as double)        as grosspay
+    ,vouchamt / grosspay             as discount_rate
+    ,cast(shpfee as double)          as shpfee
+    ,toupper(lazadasite)             as venture
+    from lzd_secods.odl_event_lazada_order_creation_risk_sg
+    where substr(ds,1,8) = '${today}'
+    )
+    group by buyer_id
+    ,venture
+  )   t1
+  left JOIN
+  (
+    SELECT venture
+    ,to_usd
+    from lazada_cdm.dim_lzd_exchange_rate
+    where ds = '${bizdate}'
+  )   t2
+  on t1.venture = t2.venture
+;
+
+--------------------table 07--------------------------------------------
+with payment_14d as
+(
+  select   cast(buyer_id as string)                   as buyer_id
+  ,max(case when payment_method like '%OTC%' or payment_method like '%VA%'  then 1 else 0 end)
+           as id_susp_paymethod_14d
+  ,venture                                    as venture
+  from lazada_cdm.dwd_lzd_trd_core_create_di
+  where ds >= '${bizdate_13d}' and ds <= '${bizdate}'
+  and is_test = 0
+  and is_fulfilled = 1
+  and b2b = 0
+  group by buyer_id
+  ,venture
+  union all
+  SELECT
+  globlacct_havanauserid          as buyer_id
+  ,max(case when globlpaydata_payselectedmethd like '%OTC%' or globlpaydata_payselectedmethd like '%VA%' then 1 else 0 end)
+  as id_susp_paymethod_14d
+  ,TOUPPER(cntry)                  as venture
+  from lzd_secods.odl_event_global_pay_now_sync
+  where substr(ds,1,8) = '${today}'
+  group by buyer_id
+  ,venture
+)
+
+insert overwrite table ato_login_v2_offline_tab_07 PARTITION(ds = '${today_hour}')
+
+  SELECT
+  buyer_id                       as buyer_id
+  ,venture                        as venture
+  ,max(id_susp_paymethod_14d)     as susp_payment_method_14d
+  from payment_14d
+  group BY buyer_id
+  ,venture
+;
+
+--------------------table 08--------------------------------------------
+
+with login_90d AS
+(
+  select cast(mbr_id as string)           as mbr_id
+  ,umid                             as umid
+  ,venture                          as venture
+  from lzd_secdw.dwd_lzd_mbr_login_ent_di
+  where ds between '${bizdate_89d}' and '${bizdate}'
+  group by mbr_id
+  ,umid
+  ,venture
+  union
+  select acctdata_userid                                                            as mbr_id
+  ,umid                                                                       as umid
+  ,TOUPPER(COALESCE(acsdata_cntry,'null'))                                    as venture
+  from lzd_secods.odl_event_async_lazada_login_success
+  where substr(ds,1,8) = '${today}'  --取今天的数据
+  and perf_test = 'false'
+  group by  mbr_id
+  ,umid
+  ,venture
+)
+
+insert overwrite table ato_login_v2_offline_tab_08 PARTITION(ds = '${today_hour}')
+
+  SELECT
+  umid                               as umid
+  ,venture                            as venture
+  ,count(distinct mbr_id)             as count_acct_same_umid_14d
+  from login_90d
+  group by umid
+  ,venture
+;
+
+--------------------table 09--------------------------------------------
+
+with buyer_14dorder_corresponding_sellers as
+(--获取近14天订单购买过的买家
+  select buyer_id                                      as buyer_id
+  ,seller_id                                     as seller_id
+  ,venture                                       as venture
+
+  from (select cast(byr_member_id as string)           as buyer_id
+  ,selllist                                as selllist
+  ,venture                                 as venture
+  from lzd_secdw.dwd_lzd_ord_crt_ent_di
+  where ds between '${bizdate_13d}' and '${bizdate}'-----过去的数据
+  union
+  select byracctid                        as buyer_id
+  ,selllist                         as selllist
+  ,toupper(lazadasite)              as venture
+  from lzd_secods.odl_event_lazada_order_creation_risk_sg
+  where substr(ds,1,8) = '${today}'  --取今天的数据 20220708
+  ) LATERAL VIEW explode(split(selllist ,','))  seller_id AS seller_id
+  group by buyer_id
+  ,seller_id
+  ,venture
+)
+
+insert overwrite table ato_login_v2_offline_tab_09 PARTITION(ds = '${today_hour}')
+--缺省值用-1填充
+  select t1.buyer_id                                as buyer_id
+  ,max(nvl(orderinfo.cancel_rate        ,-1)) as max_cancel_rate_14d
+  ,max(nvl(orderinfo.avg_item_paid_price,-1)) as max_avg_price_seller_usd_14d
+  ,max(nvl(orderinfo.avg_item_dscnt_rate,-1)) as max_avg_dscnt_rate_seller_usd_14d
+  ,max(nvl(orderinfo.avg_order_shpfee   ,-1)) as max_avg_shpfee_seller_usd_14d
+  ,t1.venture                                 as venture
+  from buyer_14dorder_corresponding_sellers t1
+  left join
+  -- 如果order_creation_risk_sg中包含list_price，此处可替换成order_creation_risk_sg table
+  -- 此处统计信息不包含今天，卖家列表包含今天
+  (--订单的seller数据
+    select seller_id                                                                 as seller_id
+    ,COUNT(*)                                                                  as order_cnt
+    ,sum(case when cancel_date is null then 0 else 1 end )                     as cancel_cnt
+    ,sum(case when cancel_date is null then 0 else 1 end ) / count(*)          as cancel_rate
+    ,avg(paid_price * exchange_rate)                                           as avg_item_paid_price
+    ,avg((list_price-paid_price)/paid_price)                                   as avg_item_dscnt_rate
+    ,sum(shipping_amount) / count(distinct order_id) * exchange_rate           as avg_order_shpfee
+    ,venture                                                                   as venture
+    from lazada_cdm.dwd_lzd_trd_core_create_di
+    where ds between '${bizdate_89d}' and '${bizdate}'
+    and is_test = 0
+    and is_fulfilled = 1
+    and b2b = 0
+    group by seller_id
+    ,venture
+    ,exchange_rate
+  ) orderinfo
+  on t1.seller_id = orderinfo.seller_id and t1.venture = orderinfo.venture
+  group by t1.buyer_id
+  ,t1.venture
+;
+
+--------------------table 10--------------------------------------------
+
+-- WITH buyer_login_30d AS
+-- (
+--     select   cast(mbr_id as string)              as mbr_id
+--             ,umid                                as umid
+--             ,venture                             as venture
+--     from lzd_secdw.dwd_lzd_mbr_login_ent_di
+--     where ds between '${bizdate_29d}' and '${bizdate}'
+--     and mbr_type = 'byr'
+--     group by mbr_id
+--             ,umid
+--             ,venture
+
+--     union
+--     select acctdata_userid                                                            as mbr_id
+--           ,umid                                                                       as umid
+--           ,TOUPPER(COALESCE(acsdata_cntry,'null'))                                    as venture
+--     from lzd_secods.odl_event_async_lazada_login_success
+--     where substr(ds,1,8) = '${today}'  --取今据
+--     and acctdata_bizrole = 'byr'
+--     and perf_test = 'false'
+--     group by mbr_id
+--             ,umid
+--             ,venture
+
+-- )
+
+-- insert overwrite table ato_login_v2_offline_tab_10 PARTITION(ds = '${today_hour}')
+
+-- SELECT
+--      mbr_id                         as buyer_id
+--     ,venture                        as venture
+--     ,wm_concat(',', umid)             as umid_list
+-- FROM buyer_login_30d
+-- group BY
+--      buyer_id
+--     ,venture
+-- ;
+
+
+--------------------table 11--------------------------------------------
+
+WITH buyer_login_90d AS
+(
+  select   cast(mbr_id as string)                 as mbr_id
+  ,venture                                as venture
+  from lzd_secdw.dwd_lzd_mbr_login_ent_di
+  where ds between '${bizdate_89d}' and '${bizdate}'
+  and mbr_type = 'byr'
+
+  union all
+  select acctdata_userid                                                            as mbr_id
+  ,TOUPPER(COALESCE(acsdata_cntry,'null'))                                    as venture
+  from lzd_secods.odl_event_async_lazada_login_success
+  where substr(ds,1,8) = '${today}'  --取今天的数据
+  and acctdata_bizrole = 'byr'
+  and perf_test = 'false'
+)
+
+insert overwrite table ato_login_v2_offline_tab_11 PARTITION(ds = '${today_hour}')
+
+  SELECT
+  mbr_id                             as buyer_id
+  ,venture                            as venture
+  ,count(*)                           as count_login_3m
+  FROM buyer_login_90d
+  group BY
+  buyer_id
+  ,venture
+;

@@ -1,0 +1,615 @@
+--name:ATO_login_v2_white_features
+--author:jiangyi.wang
+--create time:2022-08-11 10:33
+--********************************************************************--
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3 LIFECYCLE 30 as
+
+  select
+  a.user_id as buyer_id,
+  a.login_date as current_login_time,
+  a.umid as current_umid,
+  concat(split_part(a.ip,'.',1), split_part(a.ip,'.',2), SPLIT_PART(a.ip,'.',3)) as current_ip3,
+  concat(split_part(a.ip,'.',1), split_part(a.ip,'.',2)) as current_ip2,
+  a.ip as current_ip,
+  a.useragent as current_useragent,
+  a.logindata_logintype as current_logintype
+  from lazada_biz_sec_dev.white_ato_login_sample_v3  a
+;
+
+select * from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3;
+----------------------------------------------------------------------------------------------------------------------------------
+-- environment features
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_feature_env_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_feature_env_v3 LIFECYCLE 30 as
+
+WITH
+  tmp_3mon as
+  (
+    select
+    a.*,
+    b.previous_login_time,
+    b.previous_ip3,
+    b.previous_ip2
+    from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3   a
+    left join
+    (
+      select
+      acctdata_userid,
+      FROM_UNIXTIME(receive_time/1000) as previous_login_time,
+      concat(split_part(envdata_ip,'.',1), split_part(envdata_ip,'.',2), SPLIT_PART(envdata_ip,'.',3)) as previous_ip3,
+      concat(split_part(envdata_ip,'.',1), split_part(envdata_ip,'.',2)) as previous_ip2
+      from lzd_secods.odl_event_async_lazada_login_success
+      where SUBSTR(ds,1,8) >= '20220101' and SUBSTR(ds,1,8) <= '20220601'
+      and acsdata_cntry = 'id'
+      and otherdata_issucc = 'true'
+      and acctdata_bizrole = 'byr'
+    )   b
+    on a.buyer_id = b.acctdata_userid and a.current_login_time > b.previous_login_time and DATEDIFF(a.current_login_time, b.previous_login_time, 'mm') <= 3
+  ),
+  tmp_14d AS
+  (
+    select
+    a.*,
+    b.event_id,
+    b.previous_login_time,
+    b.previous_ip2,
+    b.previous_umid
+    from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3   a
+    left join
+    (
+      select
+      acctdata_userid,
+      event_id,
+      FROM_UNIXTIME(receive_time/1000) as previous_login_time,
+      concat(split_part(envdata_ip,'.',1), split_part(envdata_ip,'.',2)) as previous_ip2,
+      umid as previous_umid
+      from lzd_secods.odl_event_async_lazada_login_success
+      where SUBSTR(ds,1,8) >= '20220201' and SUBSTR(ds,1,8) <= '20220601'
+      and acsdata_cntry = 'id'
+      and otherdata_issucc = 'true'
+      and acctdata_bizrole = 'byr'
+    )   b
+    on a.buyer_id = b.acctdata_userid and a.current_login_time > b.previous_login_time and DATEDIFF(a.current_login_time, b.previous_login_time, 'dd') <= 14
+  )
+  SELECT
+  a.*,
+  b.id_new_ip3_3m,
+  b.id_new_ip2_3m
+  FROM
+  (
+    SELECT
+    buyer_id,
+    current_login_time,
+    current_umid,
+    current_ip3,
+    current_ip2,
+    current_logintype,
+    count(distinct previous_umid) as no_unique_umid_14d,
+    count(distinct previous_ip2) as no_unique_ip2_14d,
+    count(distinct event_id) as no_login_14d
+    FROM tmp_14d
+    group by buyer_id, current_login_time, current_umid, current_ip3, current_ip2, current_logintype
+  )   a
+  left JOIN
+  (
+    SELECT
+    buyer_id,
+    current_login_time,
+    current_umid,
+    current_ip3,
+    current_ip2,
+    current_logintype,
+    case when array_contains(COLLECT_LIST(distinct previous_ip3), current_ip3) then 0
+         else 1 end as id_new_ip3_3m,
+    case when ARRAY_CONTAINS(collect_list(distinct previous_ip2), current_ip2) then 0
+         else 1 end as id_new_ip2_3m
+    FROM tmp_3mon
+    group by buyer_id, current_login_time, current_umid, current_ip3, current_ip2, current_logintype
+  )   b
+  on a.buyer_id = b.buyer_id and a.current_login_time = b.current_login_time
+;
+select * from lazada_biz_sec_dev.white_ato_login_sample_feature_env_v3;
+----------------------------------------------------------------------------------------------------------------------------------
+-- buyers corresponding previous sellers (14d) and their order records
+
+-- next time can change for WITH!!!!!!
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_basic_info_full_order_seller_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_basic_info_full_order_seller_v3 LIFECYCLE 30 as
+
+
+  SELECT
+  a.*,
+  b.sales_order_id,
+  b.list_price as seller_list_price,
+  b.unit_price as seller_unit_price,
+  b.paid_price as seller_paid_price,
+  b.shipping_amount_total as seller_shipping_amount_total,
+  b.order_status as seller_order_status
+  from
+  (
+    select distinct
+    a1.buyer_id,
+    a1.current_login_time,
+    a1.current_umid,
+    a2.seller_id
+    from
+    (
+      select * from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3
+    )   a1
+    left join
+    (
+      select
+      seller_id,
+      buyer_id,
+      dateadd(order_create_date, 1, 'hour') as order_create_date
+      from lazada_cdm.dwd_lzd_trd_core_create_di
+      where ds >= '20220201' and ds <= '20220601'
+      and venture = 'ID'
+    )   a2
+    on a1.buyer_id = a2.buyer_id and DATEDIFF(a1.current_login_time, a2.order_create_date, 'dd') <= 14 and a1.current_login_time >= a2.order_create_date
+  )   a
+  left JOIN
+  (
+    SELECT
+    seller_id,
+    sales_order_id,
+    list_price * exchange_rate as list_price,
+    unit_price * exchange_rate as unit_price,
+    paid_price * exchange_rate as paid_price,
+    shipping_amount_total * exchange_rate as shipping_amount_total,
+    dateadd(order_create_date, 1, 'hour') as order_create_date,
+    CASE  WHEN item_status_ofc = 'lost_by_3pl' OR item_status_ofc = 'package_damaged' THEN '8.Lost_Damaged'
+          WHEN ship_date IS NULL AND cancel_date IS NOT NULL AND is_final_state = 1 THEN '5.Cancellation'
+          WHEN item_status_delivery = 'delivered' AND return_complete_date IS NULL THEN '4.Delivered'
+          WHEN item_status_delivery = 'delivered' AND return_complete_date IS NOT NULL THEN '6.Return_Refund'
+          WHEN item_status_last = 'order_create' THEN '0.Unpaid'
+          WHEN ship_date IS NULl AND item_status_ofc = 'handled_by_seller' THEN '1.To_Pack'
+          WHEN ship_date IS NULl AND item_status_ofc IN ('ready_to_ship','packed','transit_to_ship') THEN '2.To_Ship'
+          WHEN ship_date IS NOT NULL AND delivery_date IS NULL AND cancel_date IS NULL AND item_status_ofc = 'shipped' AND item_status_last = 'shipped' THEN '3.Shipping'
+          WHEN (ship_date IS NOT NULL AND delivery_date IS NULL  AND item_status_esm = 'rejected') OR item_status_ofc = 'deliver_failed' THEN '7.Failed_Delivered'
+          ELSE 'Unknown'
+          END AS order_status
+    from lazada_cdm.dwd_lzd_trd_core_create_di
+    WHERE ds >= '20220101' and ds <= '20220601'
+    and venture = 'ID'
+  )   b
+  on a.seller_id = b.seller_id
+  and DATEDIFF(a.current_login_time, b.order_create_date, 'mm') <= 3 and a.current_login_time >= b.order_create_date
+;
+
+select * from lazada_biz_sec_dev.white_ato_login_sample_basic_info_full_order_seller_v3;
+----------------------------------------------------------------------------------------------------------------------------------
+-- seller sides features
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_feature_seller_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_feature_seller_v3 LIFECYCLE 60 as
+
+  select
+  a.*,
+  b.max_avg_price_seller_usd_14d,
+  b.max_avg_dscnt_rate_seller_14d,
+  b.max_avg_shpfee_seller_usd_14d
+  from
+  (
+    SELECT
+    buyer_id,
+    current_login_time,
+    max(total_cancel_number/total_order_number) as max_cancel_rate_14d
+    from
+    (
+      SELECT
+      buyer_id,
+      seller_id,
+      current_login_time,
+      count(sales_order_id) as total_order_number,
+      sum(seller_order_status) as total_cancel_number
+      FROM
+      (
+        SELECT distinct
+        buyer_id,
+        seller_id,
+        current_login_time,
+        sales_order_id,
+        case when seller_order_status = '5.Cancellation' then '1' else '0' end as seller_order_status
+        from lazada_biz_sec_dev.white_ato_login_sample_basic_info_full_order_seller_v3
+      )
+      group by buyer_id, seller_id, current_login_time
+    )
+    group by buyer_id, current_login_time
+  )   a
+
+  left JOIN
+  (
+    SELECT
+    buyer_id,
+    current_login_time,
+    max(avg_price_seller_14d) as max_avg_price_seller_usd_14d,
+    max(avg_dscnt_rate_seller_14d) as max_avg_dscnt_rate_seller_14d,
+    max(avg_shpfee_seller_14d) as max_avg_shpfee_seller_usd_14d
+    FROM
+    (
+      SELECT
+      buyer_id,
+      seller_id,
+      current_login_time,
+      avg(seller_paid_price) as avg_price_seller_14d,
+      avg((seller_list_price-seller_paid_price)/seller_list_price) as avg_dscnt_rate_seller_14d,
+      avg(seller_shipping_amount_total) as avg_shpfee_seller_14d
+      FROM
+      (
+        SELECT distinct
+        buyer_id,
+        seller_id,
+        current_login_time,
+        seller_list_price,
+        seller_unit_price,
+        seller_paid_price,
+        seller_shipping_amount_total
+        from lazada_biz_sec_dev.white_ato_login_sample_basic_info_full_order_seller_v3
+      )
+      group by buyer_id, seller_id, current_login_time
+    )
+    group by buyer_id, current_login_time
+  )   b
+  on a.buyer_id = b.buyer_id and a.current_login_time = b.current_login_time
+;
+
+select * from lazada_biz_sec_dev.white_ato_login_sample_feature_seller_v3;
+----------------------------------------------------------------------------------------------------------------------------------
+-- Order info features
+
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_feature_order_v3; -- feature_order
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_feature_order_v3 LIFECYCLE 30 as
+
+  select
+  a1.*,
+  CASE
+  when ARRAY_CONTAINS(a2.list_seller_ip, a1.current_ip) then '1'  else '0'
+  end as id_ip_same_seller_14d,
+  CASE
+  when array_contains(a2.list_seller_ip3ua, a1.current_ip3ua) then '1' else '0'
+  end as id_ip3ua_same_seller_14d
+
+  from
+  (
+    SELECT
+    buyer_id,
+    current_login_time,
+    current_ip,
+    current_ip3ua,
+    COLLECT_LIST(sales_order_id) as list_sales_order_id_14d,
+    avg(order_paid_price) as avg_price_per_order_usd_14d,
+    stddev(order_paid_price) as std_price_per_order_usd_14d,
+    avg((order_list_price - order_paid_price)/order_list_price) as avg_dscnt_rate_per_order_14d,
+    stddev((order_list_price - order_paid_price)/order_list_price) as std_dscnt_rate_per_order_14d,
+    avg(order_shipping_amount) as avg_shpfee_per_order_usd_14d,
+    stddev(order_shipping_amount) as std_shpfee_per_order_usd_14d
+    FROM
+    (
+      select
+      a.buyer_id,
+      a.current_login_time,
+      a.current_ip,
+      a.current_ip3ua,
+      b.order_create_date,
+      b.sales_order_id,
+      b.order_list_price,
+      b.order_unit_price,
+      b.order_paid_price,
+      b.order_shipping_amount
+      from
+      (
+        SELECT
+        buyer_id,
+        current_login_time,
+        current_ip,
+        CONCAT(current_ip3, current_useragent) as current_ip3ua
+        from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3
+      )   a
+      left JOIN
+      (
+        SELECT
+        dateadd(order_create_date, 1, 'hour') as order_create_date,
+        sales_order_id,
+        buyer_id,
+        sum(list_price * exchange_rate) as order_list_price,
+        sum(unit_price * exchange_rate) as order_unit_price,
+        sum(paid_price * exchange_rate) as order_paid_price,
+        sum(shipping_amount_total * exchange_rate)  as order_shipping_amount
+        from lazada_cdm.dwd_lzd_trd_core_create_di
+        where SUBSTR(ds, 1, 8) >= '20220201' and substr(ds, 1, 8) <= '20220601'
+        and venture = 'ID'
+        group by order_create_date, sales_order_id, buyer_id
+      )   b
+      on a.buyer_id = b.buyer_id
+      and datediff(a.current_login_time, b.order_create_date, 'dd') <= 14 and a.current_login_time >= b.order_create_date
+    )
+    group by buyer_id, current_login_time, current_ip, current_ip3ua
+  )   a1
+
+  left JOIN
+  (
+    SELECT
+    a.buyer_id,
+    a.current_login_time,
+    collect_list(distinct b.ip3ua) as list_seller_ip3ua,
+    collect_list(distinct b.ip) as list_seller_ip
+    from
+    (
+      select distinct
+      buyer_id,
+      current_login_time,
+      seller_id
+      from lazada_biz_sec_dev.white_ato_login_sample_basic_info_full_order_seller_v3
+    )   a
+    left join
+    (
+      SELECT
+      acctdata_userid,
+      FROM_UNIXTIME(receive_time/1000) as receive_time,
+      envdata_ip as ip,
+      concat(split_part(envdata_ip,'.',1), split_part(envdata_ip,'.',2), SPLIT_PART(envdata_ip,'.',3), envdata_useragent) as ip3ua
+      from lzd_secods.odl_event_async_lazada_login_success
+      where substr(ds, 1, 8) >= '20220101' and substr(ds, 1, 8) <= '20220601'
+      and acctdata_bizrole <> 'byr'
+      and otherdata_issucc = 'true'
+    )   b
+    on a.seller_id = b.acctdata_userid
+    and DATEDIFF(a.current_login_time, b.receive_time, 'mm') <= 3 and a.current_login_time >= b.receive_time
+    group by a.buyer_id, a.current_login_time
+  )   a2
+  on a1.buyer_id = a2.buyer_id and a1.current_login_time = a2.current_login_time
+;
+
+select * from lazada_biz_sec_dev.white_ato_login_sample_feature_order_v3;
+----------------------------------------------------------------------------------------------------------------------------------
+-- login cluster
+-- number of different accounts for the same umid
+
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_feature_cluster_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_feature_cluster_v3 LIFECYCLE 30 as
+  SELECT
+  buyer_id,
+  current_login_time,
+  current_umid,
+  count(distinct login_id) as no_acct_umid_3m
+  FROM
+  (
+    SELECT
+    a.*,
+    b.login_id
+    FROM
+    (
+      select
+      buyer_id,
+      current_login_time,
+      current_umid
+      from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3
+    )   a
+
+    left join
+    (
+      select
+      acctdata_userid as login_id,
+      umid,
+      FROM_UNIXTIME(receive_time/1000) as login_time
+      from lzd_secods.odl_event_async_lazada_login_success
+      where SUBSTR(ds,1,8) >= '20220101' and SUBSTR(ds,1,8) <= '20220601'
+      and otherdata_issucc = 'true'
+    )   b
+    on a.current_umid = b.umid and DATEDIFF(a.current_login_time, b.login_time, 'mm') <= 3 and a.current_login_time > b.login_time
+  )
+  group by buyer_id, current_login_time, current_umid
+;
+
+
+select * from lazada_biz_sec_dev.white_ato_login_sample_feature_cluster_v3;
+
+----------------------------------------------------------------------------------------------------------------------------------
+-- Final features
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_login_sample_feature_v3;
+create table if not exists lazada_biz_sec_dev.white_ato_login_sample_feature_v3 LIFECYCLE 60 as
+
+  SELECT
+  a.buyer_id,
+  0 as label, -- white sample
+  a.id_new_ip2_3m,
+  a.id_new_ip3_3m,
+  a.no_unique_umid_14d,
+  a.no_unique_ip2_14d,
+  a.no_login_14d,
+  b.id_ip_same_seller_14d,
+  b.id_ip3ua_same_seller_14d,
+  b.avg_price_per_order_usd_14d,
+  b.std_price_per_order_usd_14d,
+  b.avg_dscnt_rate_per_order_14d,
+  b.std_dscnt_rate_per_order_14d,
+  b.avg_shpfee_per_order_usd_14d,
+  b.std_shpfee_per_order_usd_14d,
+  f.is_susp_paymethod_14d as id_susp_paymethod_14d,
+  c.no_acct_umid_3m,
+  d.max_cancel_rate_14d,
+  d.max_avg_price_seller_usd_14d,
+  d.max_avg_dscnt_rate_seller_14d,
+  d.max_avg_shpfee_seller_usd_14d
+
+  FROM
+  (
+    select * from lazada_biz_sec_dev.white_ato_login_sample_feature_env_v3
+  )   a
+
+  left join
+  (
+    select * from lazada_biz_sec_dev.white_ato_login_sample_feature_order_v3
+  )   b
+  on a.buyer_id = b.buyer_id and a.current_login_time = b.current_login_time
+
+  left join
+  (
+    select * from lazada_biz_sec_dev.white_ato_login_sample_feature_cluster_v3
+  )   c
+  on a.buyer_id = c.buyer_id and a.current_login_time = c.current_login_time
+
+  left JOIN
+  (
+    select * from lazada_biz_sec_dev.white_ato_login_sample_feature_seller_v3
+  )   d
+  on a.buyer_id = d.buyer_id and a.current_login_time = d.current_login_time
+  left JOIN
+  (
+    select
+           a1.buyer_id,
+           a1.current_login_time,
+           max(a2.is_susp_paymethod_flag) as is_susp_paymethod_14d
+    from
+    (
+      select
+      buyer_id,
+      current_login_time
+      from lazada_biz_sec_dev.white_ato_login_sample_basic_info_v3
+    )   a1
+    left join
+    (
+      SELECT
+      buyer_id,
+      case when (payment_method like '%VA%') or (payment_method like '%OTC%') then '1' else '0'
+           end as is_susp_paymethod_flag,
+      dateadd(order_create_date, 1, 'hour') as order_create_date
+      from lazada_cdm.dwd_lzd_trd_core_create_di
+      where ds >= '20220201' and ds <= '20220601'
+      and venture = 'ID'
+    )   a2
+    on a1.buyer_id = a2.buyer_id
+    and DATEDIFF(a1.current_login_time, a2.order_create_date, 'dd') <= 14 and a1.current_login_time >= a2.order_create_date
+    group by a1.buyer_id, a1.current_login_time
+  )   f
+  on a.buyer_id = f.buyer_id and a.current_login_time = f.current_login_time
+;
+
+select * from lazada_biz_sec_dev.white_ato_login_sample_feature_v3;
+---------------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.ato_login_sample_feature_v3;
+create table if not exists lazada_biz_sec_dev.ato_login_sample_feature_v3 LIFECYCLE 30 as
+
+  SELECT
+  buyer_id,
+  label,
+  cast(id_new_ip2_3m as bigint) as id_new_ip2_3m,
+  cast(id_new_ip3_3m as bigint) as id_new_ip3_3m,
+  no_unique_umid_14d,
+  no_unique_ip2_14d,
+  no_login_14d,
+  cast(id_ip_same_seller_14d as BIGINT ) as id_ip_same_seller_14d,
+  cast(id_ip3ua_same_seller_14d as BIGINT ) as id_ip3ua_same_seller_14d,
+  avg_price_per_order_usd_14d,
+  std_price_per_order_usd_14d,
+  avg_dscnt_rate_per_order_14d,
+  std_dscnt_rate_per_order_14d,
+  avg_shpfee_per_order_usd_14d,
+  std_shpfee_per_order_usd_14d,
+  cast(id_susp_paymethod_14d as bigint) as id_susp_paymethod_14d,
+  no_acct_umid_3m,
+  max_cancel_rate_14d,
+  max_avg_price_seller_usd_14d,
+  max_avg_dscnt_rate_seller_14d,
+  max_avg_shpfee_seller_usd_14d
+  from lazada_biz_sec_dev.white_ato_login_sample_feature_v3
+  union ALL
+  (
+    select
+    buyer_id,
+    label,
+    cast(id_new_ip2_3m as bigint) as id_new_ip2_3m,
+    cast(id_new_ip3_3m as bigint) as id_new_ip3_3m,
+    no_unique_umid_14d,
+    no_unique_ip2_14d,
+    no_login_14d,
+    cast(id_ip_same_seller_14d as BIGINT ) as id_ip_same_seller_14d,
+    cast(id_ip3ua_same_seller_14d as BIGINT ) as id_ip3ua_same_seller_14d,
+    avg_price_per_order_usd_14d,
+    std_price_per_order_usd_14d,
+    avg_dscnt_rate_per_order_14d,
+    std_dscnt_rate_per_order_14d,
+    avg_shpfee_per_order_usd_14d,
+    std_shpfee_per_order_usd_14d,
+    cast(id_susp_paymethod_14d as bigint) as id_susp_paymethod_14d,
+    no_acct_umid_3m,
+    max_cancel_rate_14d,
+    max_avg_price_seller_usd_14d,
+    max_avg_dscnt_rate_seller_14d,
+    max_avg_shpfee_seller_usd_14d
+    from lazada_biz_sec_dev.black_ato_login_sample_feature_v3
+  )
+;
+
+select * from lazada_biz_sec_dev.ato_login_sample_feature_v3;
+
+---------------------------------------------------------------------------------
+
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.seller_scam_login_sample_feature_v3;
+create table if not exists lazada_biz_sec_dev.seller_scam_login_sample_feature_v3 LIFECYCLE 30 as
+
+  SELECT
+  buyer_id,
+  label,
+  cast(id_new_ip2_3m as bigint) as id_new_ip2_3m,
+  cast(id_new_ip3_3m as bigint) as id_new_ip3_3m,
+  no_unique_umid_14d,
+  no_unique_ip2_14d,
+  no_login_14d,
+  cast(id_ip_same_seller_14d as BIGINT ) as id_ip_same_seller_14d,
+  cast(id_ip3ua_same_seller_14d as BIGINT ) as id_ip3ua_same_seller_14d,
+  avg_price_per_order_usd_14d,
+  std_price_per_order_usd_14d,
+  avg_dscnt_rate_per_order_14d,
+  std_dscnt_rate_per_order_14d,
+  avg_shpfee_per_order_usd_14d,
+  std_shpfee_per_order_usd_14d,
+  cast(id_susp_paymethod_14d as bigint) as id_susp_paymethod_14d,
+  no_acct_umid_3m,
+  max_cancel_rate_14d,
+  max_avg_price_seller_usd_14d,
+  max_avg_dscnt_rate_seller_14d,
+  max_avg_shpfee_seller_usd_14d
+  from lazada_biz_sec_dev.white_ato_login_sample_feature_v3
+  union ALL
+  (
+    select
+    buyer_id,
+    label,
+    cast(id_new_ip2_3m as bigint) as id_new_ip2_3m,
+    cast(id_new_ip3_3m as bigint) as id_new_ip3_3m,
+    no_unique_umid_14d,
+    no_unique_ip2_14d,
+    no_login_14d,
+    cast(id_ip_same_seller_14d as BIGINT ) as id_ip_same_seller_14d,
+    cast(id_ip3ua_same_seller_14d as BIGINT ) as id_ip3ua_same_seller_14d,
+    avg_price_per_order_usd_14d,
+    std_price_per_order_usd_14d,
+    avg_dscnt_rate_per_order_14d,
+    std_dscnt_rate_per_order_14d,
+    avg_shpfee_per_order_usd_14d,
+    std_shpfee_per_order_usd_14d,
+    cast(id_susp_paymethod_14d as bigint) as id_susp_paymethod_14d,
+    no_acct_umid_3m,
+    max_cancel_rate_14d,
+    max_avg_price_seller_usd_14d,
+    max_avg_dscnt_rate_seller_14d,
+    max_avg_shpfee_seller_usd_14d
+    from lazada_biz_sec_dev.seller_scam_ato_login_sample_feature_v3
+  )
+;
+
+select * from lazada_biz_sec_dev.seller_scam_login_sample_feature_v3;
+
+
+

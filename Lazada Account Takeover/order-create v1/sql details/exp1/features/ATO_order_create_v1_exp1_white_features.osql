@@ -1,0 +1,128 @@
+--name:ATO_order_create_v1_exp1_white_features
+--author:jiangyi.wang
+--create time:2022-08-11 18:34
+--********************************************************************--
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base2;
+create table if not exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base2 LIFECYCLE 30 as
+
+  select
+  a.*,
+  b.event_id,
+  b.login_time,
+  DATEDIFF(a.order_create_time, b.login_time, 'ss') as date_diff
+  from
+  (
+    select * from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base1
+  )   a
+  left join
+  (
+    SELECT distinct
+    event_id,
+    acctdata_userid,
+    umid,
+    envdata_utdid,
+    from_unixtime(receive_time/1000) as login_time
+    FROM lzd_secods.odl_event_async_lazada_login_success
+    where substr(ds,1,8) >= '20220401' and substr(ds,1,8) <= '20220601'
+  )   b
+  on a.order_buyer_id = b.acctdata_userid
+  and DATEDIFF(a.order_create_time, b.login_time, 'mi') > 0
+  and DATEDIFF(a.order_create_time, b.login_time, 'dd') < 5
+;
+
+select * from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base2;
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base3;
+create table if not exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base3 LIFECYCLE 30 as
+
+  SELECT
+  b.*
+  from
+  (
+    select
+    order_buyer_id,
+    orderid,
+    min(date_diff) as min_date_diff
+    from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base2
+    where event_id is not null
+    group by order_buyer_id, orderid
+  )   a
+  left join
+  (
+    SELECT
+    *
+    from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base2
+  )   b
+  on a.order_buyer_id = b.order_buyer_id and a.orderid = b.orderid and a.min_date_diff = b.date_diff
+;
+
+select * from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base3;
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_click;
+create table if not exists lazada_biz_sec_dev.white_ato_order_create_v1_exp1_click LIFECYCLE 30 as
+  SELECT
+  a.order_buyer_id,
+  a.orderid,
+  a.order_create_time,
+  wm_CONCAT(',',b.spam) within group(order by b.visit_time, b.local_time) as features,
+  collect_list(b.spam) within group(order by b.visit_time, b.local_time) as spam_list,
+  sum(b.page_stay_time) as total_stay_time,
+  avg(b.page_stay_time) as average_stay_time
+  from
+  (
+    select *
+    from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_base3
+    where order_buyer_id is not Null
+  )   a
+  left join
+  (
+    SELECT
+    local_time,
+    url,
+    visit_time,
+    user_id,
+    split_part(spm_id, '.', 2) as spam,
+    utdid,
+    page_stay_time
+    from alilog.dwd_lzd_log_ut_pv_di
+    where ds >= '20220401' and ds <= '20220602'
+    and venture = 'ID'
+  )   b
+  on a.order_create_time >= b.local_time and a.login_time <= b.local_time and a.order_buyer_id = b.user_id
+  group by a.order_buyer_id, a.orderid, a.order_create_time
+;
+--合并
+------------------------------------------------------------------------
+SET odps.instance.priority = 0;
+drop table if exists lazada_biz_sec_dev.ato_order_create_v1_exp1_click;
+create table if not exists lazada_biz_sec_dev.ato_order_create_v1_exp1_click LIFECYCLE 30 as
+
+  select
+  1 as label,
+  TO_CHAR(order_buyer_id) as order_buyer_id,
+  orderid,
+  order_create_time,
+  features,
+  spam_list,
+  total_stay_time,
+  average_stay_time
+  from lazada_biz_sec_dev.black_ato_order_create_v1_exp1_click
+  union ALL
+  (
+    select
+    0 as label,
+    *
+    from lazada_biz_sec_dev.white_ato_order_create_v1_exp1_click
+    where features is not null
+  )
+;
+
+select * from lazada_biz_sec_dev.ato_order_create_v1_exp1_click
+limit 1500;
+
+select * from lazada_biz_sec_dev.ato_order_create_v1_exp1_click
+where label = 1;
+------------------------------------------------------------------------
